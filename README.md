@@ -1,6 +1,6 @@
 # ocrmypdf-ocrdemo
 
-Apache-2.0. OCRmyPDF plugin that runs OCR through your **ocr-demo** service (`POST /api/ocr`) instead of Tesseract, and builds a searchable PDF text layer via OCRmyPDF’s fpdf2 path (`generate_ocr`).
+Apache-2.0. OCRmyPDF plugin that runs OCR through an **ocr-demo–compatible** HTTP service (`POST /api/ocr`) instead of Tesseract, and builds a searchable PDF text layer via OCRmyPDF’s fpdf2 path (`generate_ocr`). You can use it from the **CLI** or from **paperless-ngx** (see [Paperless-ngx integration](#paperless-ngx-integration)).
 
 ## Install
 
@@ -43,6 +43,42 @@ Best selection alignment comes from ocr-demo **`analyzeResult.pages[].words`** w
 ### Rotation / deskew and `DESKEW_ENABLED`
 
 When **`--rotate-pages`** or **`--deskew`** is enabled, OCRmyPDF calls `get_orientation` / `get_deskew` on the raster preview. By default this plugin performs **additional HTTP requests** to ocr-demo and maps `analyzeResult.pages[0].angle` (net CCW correction metadata when server deskew is on) into those hooks. This mapping is **heuristic**; for strict alignment when ocr-demo uses internal deskew, prefer **`DESKEW_ENABLED=false`** on the server and let OCRmyPDF handle deskew locally, or pass **`--ocrdemo-no-remote-geometry-hints`** and manage geometry entirely on the OCRmyPDF side.
+
+## Paperless-ngx integration
+
+[paperless-ngx](https://github.com/paperless-ngx/paperless-ngx) runs OCR through the **OCRmyPDF Python API** (`ocrmypdf.ocr(**kwargs)`), not the `ocrmypdf` shell command. Extra kwargs are merged from **`PAPERLESS_OCR_USER_ARGS`** (JSON). See the upstream docs: [Configuration → `PAPERLESS_OCR_USER_ARGS`](https://docs.paperless-ngx.com/configuration/#PAPERLESS_OCR_USER_ARGS). If OCR settings are overridden in the Paperless **web UI**, those values take precedence over the environment variable.
+
+### Steps
+
+1. **Run ocr-demo** (or any compatible `POST /api/ocr` backend) on a host/port reachable from the **Paperless worker** (the process that consumes documents — often the `paperless` service in Docker Compose, not only the web container).
+
+2. **Install this package** in the **same Python environment** as Paperless (same venv or extend the official Docker image with `pip install ocrmypdf-ocrdemo`). The setuptools entry point registers the plugin with OCRmyPDF; **do not** also pass a duplicate `plugins` list for this module (same rule as [Entry point](#entry-point)).
+
+3. **OCRmyPDF version** — Paperless currently pins **`ocrmypdf~=16.12`** in its own dependencies, while **ocrmypdf-ocrdemo** requires **`ocrmypdf>=17`**. Until Paperless bumps that pin, you need a **custom image or dependency override** that installs OCRmyPDF 17+ and re-tests document consumption. After versions align, a normal `pip install ocrmypdf-ocrdemo` in the Paperless image is enough.
+
+4. **Keep Tesseract** installed in that image (Paperless / OCRmyPDF still expect it for checks and the rest of the pipeline, even when `ocr_engine` is `ocrdemo`).
+
+5. **Set user kwargs** so OCRmyPDF selects this engine and knows the API base URL. Option names use **underscores** (same as OCRmyPDF’s Python API / CLI `dest` names). Minimal example:
+
+   ```json
+   {
+     "ocr_engine": "ocrdemo",
+     "ocrdemo_base_url": "http://ocr-demo:8000"
+   }
+   ```
+
+   In **Docker Compose**, pass the JSON as a single line (escape quotes as needed for your shell):
+
+   ```yaml
+   environment:
+     PAPERLESS_OCR_USER_ARGS: '{"ocr_engine":"ocrdemo","ocrdemo_base_url":"http://ocr-demo:8000"}'
+   ```
+
+   Optional keys match the CLI flags above, for example `ocrdemo_api_token`, `ocrdemo_timeout`, `ocrdemo_mode`, `ocrdemo_backend`, `ocrdemo_no_verify_ssl`, `ocrdemo_no_remote_geometry_hints`, etc.
+
+6. **Timeouts** — remote OCR can exceed local Tesseract. If tasks abort, increase **`PAPERLESS_TASK_WORKER_TIMEOUT`** and/or `ocrdemo_timeout` in user args.
+
+7. **OCR mode** — continue to use Paperless’s **`PAPERLESS_OCR_MODE`** (`skip`, `redo`, `force`, …) as usual; those map to OCRmyPDF’s `skip_text` / `redo_ocr` / `force_ocr` before your user args are merged.
 
 ## Tests
 
